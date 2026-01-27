@@ -82,6 +82,19 @@ def get_models(modelset, modality='all'):
         lvm_models = [
             "vit_giant_patch14_dinov2.lvd142m",
         ]
+    elif modelset == 'mini':
+        llm_models = [
+            "bigscience/bloomz-560m",
+            "google/gemma-7b",
+            "huggyllama/llama-7b",
+        ]
+        lvm_models = [
+            "vit_small_patch14_dinov2.lvd142m",
+            "vit_base_patch14_dinov2.lvd142m",
+            "vit_base_patch16_clip_224.laion2b",
+            "vit_large_patch14_clip_224.laion2b",
+        ]
+    
     else:
         raise ValueError(f"Unknown modelset: {modelset}")
     
