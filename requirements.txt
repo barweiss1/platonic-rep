@@ -9,3 +9,4 @@ timm
 accelerate
 sentencepiece
 protobuf
+bitsandbytes
