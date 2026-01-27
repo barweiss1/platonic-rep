@@ -19,11 +19,25 @@ class AlignmentMetrics:
         "mutual_knn",
         "lcs_knn",
         "cka",
+        "cka_rbf",
         "unbiased_cka",
         "cknna",
         "svcca",
         "edit_distance_knn",
     ]
+    
+    # Define which parameter each metric sweeps over and its range
+    SWEEP_PARAMS = {
+        "cycle_knn": {"param": "topk", "min": 5, "max": 300},
+        "mutual_knn": {"param": "topk", "min": 5, "max": 300},
+        "lcs_knn": {"param": "topk", "min": 5, "max": 300},
+        "cknna": {"param": "topk", "min": 5, "max": 300},
+        "edit_distance_knn": {"param": "topk", "min": 5, "max": 300},
+        "cka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 5.0},
+        "cka": {"param": None, "min": None, "max": None},  # No sweep
+        "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
+        "svcca": {"param": None, "min": None, "max": None},  # No sweep
+    }
 
     @staticmethod
     def measure(metric, *args, **kwargs):
@@ -32,6 +46,11 @@ class AlignmentMetrics:
         if metric not in AlignmentMetrics.SUPPORTED_METRICS:
             raise ValueError(f"Unrecognized metric: {metric}")
 
+        # Map cka_rbf to cka with rbf kernel
+        if metric == "cka_rbf":
+            kwargs['kernel_metric'] = 'rbf'
+            return AlignmentMetrics.cka(*args, **kwargs)
+        
         return getattr(AlignmentMetrics, metric)(*args, **kwargs)
 
 
