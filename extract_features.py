@@ -48,15 +48,24 @@ def extract_llm_features(filenames, dataset, args):
         llm_param_count = sum([p.numel() for p in language_model.parameters()])
         tokenizer = load_tokenizer(llm_model_name)
     
-        tokens = tokenizer(texts, padding="longest", return_tensors="pt")        
+        # Tokenize once to get max length, but don't create tensors yet to save memory
+        tokenized_lengths = [len(tokenizer.encode(text)) for text in texts]
+        max_length = max(tokenized_lengths)
+        
         llm_feats, losses, bpb_losses = [], [], []
+        all_attention_masks = []
 
         # hack to get around HF mapping data incorrectly when using model-parallel
         device = next(language_model.parameters()).device
 
         for i in trange(0, len(dataset), args.batch_size):
+            # Tokenize batch-by-batch with consistent max_length padding
+            batch_texts = texts[i:i+args.batch_size]
+            tokens = tokenizer(batch_texts, padding="max_length", max_length=max_length, truncation=True, return_tensors="pt")
+            
             # get embedding cuda device
-            token_inputs = {k: v[i:i+args.batch_size].to(device).long() for (k, v) in tokens.items()}
+            token_inputs = {k: v.to(device).long() for (k, v) in tokens.items()}
+            all_attention_masks.append(tokens["attention_mask"])
 
             with torch.no_grad():
                 if "olmo" in llm_model_name.lower():
@@ -74,33 +83,41 @@ def extract_llm_features(filenames, dataset, args):
                 loss, avg_loss = utils.cross_entropy_loss(token_inputs, llm_output)
                 losses.extend(avg_loss.cpu())
                 
-                bpb = utils.cross_entropy_to_bits_per_unit(loss.cpu(), texts[i:i+args.batch_size], unit="byte")
+                bpb = utils.cross_entropy_to_bits_per_unit(loss.cpu(), batch_texts, unit="byte")
                 bpb_losses.extend(bpb)
                 
-                # make sure to do all the processing in cpu to avoid memory problems
+                # Move pooling computation to CPU to avoid OOM on GPU
                 if args.pool == 'avg':
-                    feats = torch.stack(llm_output["hidden_states"]).permute(1, 0, 2, 3)
-                    mask = token_inputs["attention_mask"].unsqueeze(-1).unsqueeze(1)
+                    # Move hidden states to CPU immediately
+                    hidden_states_cpu = [h.cpu() for h in llm_output["hidden_states"]]
+                    feats = torch.stack(hidden_states_cpu).permute(1, 0, 2, 3)
+                    mask = token_inputs["attention_mask"].cpu().unsqueeze(-1).unsqueeze(1)
                     feats = (feats * mask).sum(2) / mask.sum(2)
+                    del hidden_states_cpu
                 elif args.pool == 'last':
-                    feats = [v[:, -1, :] for v in llm_output["hidden_states"]]
+                    # Move to CPU immediately
+                    feats = [v[:, -1, :].cpu() for v in llm_output["hidden_states"]]
                     feats = torch.stack(feats).permute(1, 0, 2) 
                 else:
                     raise NotImplementedError(f"unknown pooling {args.pool}")
-                llm_feats.append(feats.cpu())
+                llm_feats.append(feats)
+                
+                # Clean up GPU memory after each batch
+                del llm_output, token_inputs
+                torch.cuda.empty_cache()
 
         print(f"average loss:\t{torch.stack(losses).mean().item()}")
         save_dict = {
-            "feats": torch.cat(llm_feats).cpu(),
+            "feats": torch.cat(llm_feats),
             "num_params": llm_param_count,
-            "mask": tokens["attention_mask"].cpu(),
+            "mask": torch.cat(all_attention_masks),
             "loss": torch.stack(losses).mean(),
             "bpb": torch.stack(bpb_losses).mean(),
         }
 
         torch.save(save_dict, save_path)
 
-        del language_model, tokenizer, llm_feats, llm_output
+        del language_model, tokenizer, llm_feats
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         gc.collect()
@@ -177,12 +194,14 @@ if __name__ == "__main__":
     parser.add_argument("--force_remake",   action="store_true")
     parser.add_argument("--num_samples",    type=int, default=1024)
     parser.add_argument("--batch_size",     type=int, default=4)
-    parser.add_argument("--pool",           type=str, default='avg', choices=['avg', 'cls'])
+    # pooling method, note that not all pooling methods are supported for all model types, 
+    # we therefore adjust them accordingly in the code below: LANG models use 'avg', VISION models use 'cls'
+    parser.add_argument("--pool",           type=str, default='avg', choices=['avg', 'cls']) 
     parser.add_argument("--prompt",         action="store_true")
     parser.add_argument("--dataset",        type=str, default="prh")
     parser.add_argument("--subset",         type=str, default="wit_1024")
     parser.add_argument("--caption_idx",    type=int, default=0)
-    parser.add_argument("--modelset",       type=str, default="val", choices=["val", "test"])
+    parser.add_argument("--modelset",       type=str, default="val", choices=["val", "test", "mini"])
     parser.add_argument("--modality",       type=str, default="all", choices=["vision", "language", "all"])
     parser.add_argument("--output_dir",     type=str, default="./results/features")
     parser.add_argument("--qlora",          action="store_true")
@@ -196,10 +215,24 @@ if __name__ == "__main__":
     # load dataset once outside    
     dataset = load_dataset(args.dataset, revision=args.subset, split='train')
 
+    # The paper uses CLS token pooling for vision models and AVG pooling for language models
+    # We therefore fix the pooling method here accordingly
     if args.modality in ["all", "language"]:
         # extract all language model features
+        # Override pool to 'avg' for language models if 'cls' was specified
+        original_pool = args.pool
+        if args.pool == 'cls':
+            print("Note: Using 'avg' pooling for language models (cls not supported)")
+            args.pool = 'avg'
         extract_llm_features(llm_models, dataset, args)
+        args.pool = original_pool  # restore original
     
     if args.modality in ["all", "vision"]:
         # extract all vision model features
+        # Override pool to 'cls' for vision models if 'avg' was specified
+        original_pool = args.pool
+        if args.pool != 'cls':
+            print("Note: Using 'cls' pooling for vision models (only cls supported)")
+            args.pool = 'cls'
         extract_lvm_features(lvm_models, dataset, args)
+        args.pool = original_pool  # restore original

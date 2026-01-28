@@ -19,11 +19,25 @@ class AlignmentMetrics:
         "mutual_knn",
         "lcs_knn",
         "cka",
+        "cka_rbf",
         "unbiased_cka",
         "cknna",
         "svcca",
         "edit_distance_knn",
     ]
+    
+    # Define which parameter each metric sweeps over and its range
+    SWEEP_PARAMS = {
+        "cycle_knn": {"param": "topk", "min": 3, "max": 1000},
+        "mutual_knn": {"param": "topk", "min": 3, "max": 1000},
+        "lcs_knn": {"param": "topk", "min": 3, "max": 1000},
+        "cknna": {"param": "topk", "min": 3, "max": 1000},
+        "edit_distance_knn": {"param": "topk", "min": 5, "max": 300},
+        "cka_rbf": {"param": "rbf_sigma", "min": 0.05, "max": 20.0},
+        "cka": {"param": None, "min": None, "max": None},  # No sweep
+        "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
+        "svcca": {"param": None, "min": None, "max": None},  # No sweep
+    }
 
     @staticmethod
     def measure(metric, *args, **kwargs):
@@ -32,6 +46,11 @@ class AlignmentMetrics:
         if metric not in AlignmentMetrics.SUPPORTED_METRICS:
             raise ValueError(f"Unrecognized metric: {metric}")
 
+        # Map cka_rbf to cka with rbf kernel
+        if metric == "cka_rbf":
+            kwargs['kernel_metric'] = 'rbf'
+            return AlignmentMetrics.cka(*args, **kwargs)
+        
         return getattr(AlignmentMetrics, metric)(*args, **kwargs)
 
 
@@ -93,7 +112,7 @@ class AlignmentMetrics:
     
     
     @staticmethod
-    def cka(feats_A, feats_B, kernel_metric='ip', rbf_sigma=1.0, unbiased=False):
+    def cka(feats_A, feats_B, kernel_metric='ip', rbf_sigma=1.0, unbiased=False, median=True):
         """Computes the unbiased Centered Kernel Alignment (CKA) between features."""
         
         if kernel_metric == 'ip':
@@ -102,8 +121,18 @@ class AlignmentMetrics:
             L = torch.mm(feats_B, feats_B.T)
         elif kernel_metric == 'rbf':
             # COMPUTES RBF KERNEL
-            K = torch.exp(-torch.cdist(feats_A, feats_A) ** 2 / (2 * rbf_sigma ** 2))
-            L = torch.exp(-torch.cdist(feats_B, feats_B) ** 2 / (2 * rbf_sigma ** 2))
+            K = torch.cdist(feats_A, feats_A)
+            L = torch.cdist(feats_B, feats_B)
+            if median:
+                # use median heuristic for bandwidth using lower triangular part (excluding diagonal)
+                tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
+                rbf_sigma_K = torch.median(K[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
+                rbf_sigma_L = torch.median(L[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
+            else:
+                rbf_sigma_K = rbf_sigma
+                rbf_sigma_L = rbf_sigma
+            K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
+            L = torch.exp(- L ** 2 / (2 * rbf_sigma_L ** 2))
         else:
             raise ValueError(f"Invalid kernel metric {kernel_metric}")
 
