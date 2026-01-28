@@ -30,8 +30,8 @@ def to_alignment_filename(output_dir, dataset, modelset,
         output_dir,
         dataset,
         modelset,
-        f"{modality_x}_pool-{pool_x}_prompt-{prompt_x}_{modality_y}_pool-{pool_y}_prompt-{prompt_y}",
-        f"{metric}_sweep{sweep_len}_layer_{layer_mode}.npy"
+        f"{modality_x}_pool-{pool_x}_prompt-{prompt_x}_{modality_y}_pool-{pool_y}_prompt-{prompt_y}_layer-{layer_mode}",
+        f"{metric}_sweep{sweep_len}.npy"
     )
     return save_path
     

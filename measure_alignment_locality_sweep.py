@@ -41,7 +41,7 @@ def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, preci
     alignment_scores = np.zeros((len(x_feat_paths), len(y_feat_paths), len(param_vec)))
     alignment_indices = np.zeros((len(x_feat_paths), len(y_feat_paths), len(param_vec), 2))
 
-    pbar = tqdm(total=len(y_feat_paths) * len(x_feat_paths))
+    pbar = tqdm(total=len(y_feat_paths) * len(x_feat_paths) * len(param_vec))
     
     # Get the parameter name for this metric
     sweep_config = metrics.AlignmentMetrics.SWEEP_PARAMS[metric]
@@ -78,7 +78,7 @@ def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, preci
                 
                 if symmetric_metric:
                     alignment_scores[j, i, param_idx] = best_score
-                    alignment_indices[j, i, param_idx] = best_indices[::-1]
+                    alignment_indices[j, i, param_idx] = (best_indices[1], best_indices[0])
 
                 pbar.update(1)
 
@@ -136,9 +136,11 @@ if __name__ == "__main__":
         if param_name == 'topk':
             # For topk, use integer steps
             param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).round().long().tolist()
+            # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).round().long().tolist()
         else:
             # For continuous parameters like rbf_sigma, use float steps
             param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
+            # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
     else:
         # No sweep for this metric, just use a single default value
         param_vec = [None]

@@ -31,7 +31,7 @@ def prepare_features(feats, q=0.95, exact=False):
         raise ValueError(f"Unsupported input type for prepare_features: {type(feats)}")
 
 
-def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True, layer_mode='max'):
+def compute_score(x_feats, y_feats, metric="mutual_knn", normalize=True, layer_mode='max', **kwargs):
     """
     Uses different layer combinations of x_feats and y_feats to find the best alignment
     Args:
@@ -49,7 +49,7 @@ def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True
         y_feats = [y_feats[:, j, :] for j in range(y_feats.shape[1])]
 
     best_alignment_indices = None
-    best_alignment_score = 0
+    best_alignment_score = float('-inf')  # Changed from 0 to -inf to handle negative scores
 
     # Determine which layers to compare based on layer_mode
     if layer_mode == 'final':
@@ -73,10 +73,6 @@ def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True
             else:
                 x_aligned = x
                 y_aligned = y
-
-            kwargs = {}
-            if 'knn' in metric:
-                kwargs['topk'] = topk
 
             score = metrics.AlignmentMetrics.measure(metric, x_aligned, y_aligned, **kwargs)
 
