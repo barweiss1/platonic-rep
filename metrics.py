@@ -112,7 +112,7 @@ class AlignmentMetrics:
     
     
     @staticmethod
-    def cka(feats_A, feats_B, kernel_metric='ip', rbf_sigma=1.0, unbiased=False):
+    def cka(feats_A, feats_B, kernel_metric='ip', rbf_sigma=1.0, unbiased=False, median=True):
         """Computes the unbiased Centered Kernel Alignment (CKA) between features."""
         
         if kernel_metric == 'ip':
@@ -121,8 +121,18 @@ class AlignmentMetrics:
             L = torch.mm(feats_B, feats_B.T)
         elif kernel_metric == 'rbf':
             # COMPUTES RBF KERNEL
-            K = torch.exp(-torch.cdist(feats_A, feats_A) ** 2 / (2 * rbf_sigma ** 2))
-            L = torch.exp(-torch.cdist(feats_B, feats_B) ** 2 / (2 * rbf_sigma ** 2))
+            K = torch.cdist(feats_A, feats_A)
+            L = torch.cdist(feats_B, feats_B)
+            if median:
+                # use median heuristic for bandwidth using lower triangular part (excluding diagonal)
+                tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
+                rbf_sigma_K = torch.median(K[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
+                rbf_sigma_L = torch.median(L[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
+            else:
+                rbf_sigma_K = rbf_sigma
+                rbf_sigma_L = rbf_sigma
+            K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
+            L = torch.exp(- L ** 2 / (2 * rbf_sigma_L ** 2))
         else:
             raise ValueError(f"Invalid kernel metric {kernel_metric}")
 

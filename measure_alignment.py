@@ -31,12 +31,13 @@ def prepare_features(feats, q=0.95, exact=False):
         raise ValueError(f"Unsupported input type for prepare_features: {type(feats)}")
 
 
-def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True):
+def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True, layer_mode='max'):
     """
     Uses different layer combinations of x_feats and y_feats to find the best alignment
     Args:
         x_feats: a torch tensor of shape N x L x D
         y_feats: a torch tensor of shape N x L x D
+        layer_mode: 'max' to find max alignment across all layers, 'final' to use only final layer
     Returns:
         best_alignment_score: the best alignment score
         best_alignment: the indices of the best alignment
@@ -50,8 +51,22 @@ def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True
     best_alignment_indices = None
     best_alignment_score = 0
 
-    for i, x in enumerate(x_feats):
-        for j, y in enumerate(y_feats):
+    # Determine which layers to compare based on layer_mode
+    if layer_mode == 'final':
+        # Only compare final layers
+        x_indices = [len(x_feats) - 1]
+        y_indices = [len(y_feats) - 1]
+    elif layer_mode == 'max':
+        # Compare all layer combinations
+        x_indices = range(len(x_feats))
+        y_indices = range(len(y_feats))
+    else:
+        raise ValueError(f"Invalid layer_mode: {layer_mode}. Must be 'final' or 'max'")
+
+    for i in x_indices:
+        x = x_feats[i]
+        for j in y_indices:
+            y = y_feats[j]
             if normalize:
                 x_aligned = F.normalize(x, p=2, dim=-1)
                 y_aligned = F.normalize(y, p=2, dim=-1)
@@ -71,7 +86,7 @@ def compute_score(x_feats, y_feats, metric="mutual_knn", topk=10, normalize=True
     return best_alignment_score, best_alignment_indices
 
     
-def compute_alignment(x_feat_paths, y_feat_paths, metric, topk, precise=True):
+def compute_alignment(x_feat_paths, y_feat_paths, metric, topk, precise=True, layer_mode='max'):
     """
     Args:
         x_feat_paths: list of paths to x features
@@ -81,6 +96,7 @@ def compute_alignment(x_feat_paths, y_feat_paths, metric, topk, precise=True):
         precise: if true use exact quantiling. (helpful to set to false if running on cpu)
             this is more of a feature to speed up matmul if using float32 
             used in measure_alignment.py
+        layer_mode: 'max' to find max alignment across all layers, 'final' to use only final layer
     Returns:
         alignment_scores: a numpy array of shape len(x_feat_paths) x len(y_feat_paths)
         alignment_indices: a numpy array of shape len(x_feat_paths) x len(y_feat_paths) x 2
@@ -117,7 +133,7 @@ def compute_alignment(x_feat_paths, y_feat_paths, metric, topk, precise=True):
                 y_feats = prepare_features(raw_y.float(), exact=precise)
             else:
                 y_feats = [prepare_features(layer.float(), exact=precise) for layer in raw_y]
-            best_score, best_indices = compute_score(y_feats, x_feats, metric=metric, topk=topk)
+            best_score, best_indices = compute_score(y_feats, x_feats, metric=metric, topk=topk, layer_mode=layer_mode)
             
             alignment_scores[i, j] = best_score
             alignment_indices[i, j] = best_indices
@@ -154,6 +170,7 @@ if __name__ == "__main__":
     parser.add_argument("--modelset",       type=str, default="val", choices=["val", "test", "mini"])
     parser.add_argument("--metric",         type=str, default="mutual_knn", choices=metrics.AlignmentMetrics.SUPPORTED_METRICS)
     parser.add_argument("--topk",           type=int, default=10)
+    parser.add_argument("--layer_mode",     type=str, default="max", choices=["max", "final"], help="'max' finds best alignment across all layers, 'final' uses only final layer")
 
     parser.add_argument("--input_dir",      type=str, default="./results/features")
     parser.add_argument("--output_dir",     type=str, default="./results/alignment")
@@ -172,7 +189,7 @@ if __name__ == "__main__":
             args.output_dir, args.dataset, args.modelset,
             args.modality_x, args.pool_x, args.prompt_x,
             args.modality_y, args.pool_y, args.prompt_y,
-            args.metric, args.topk
+            args.metric, args.topk, args.layer_mode
     )
     
     if os.path.exists(save_path) and not args.force_remake:
@@ -191,6 +208,7 @@ if __name__ == "__main__":
     
     print(f"dataset:\t{args.dataset}")
     print(f"metric: \t{args.metric}")
+    print(f"layer_mode:\t{args.layer_mode}")
     if 'knn' in args.metric:
         print(f"topk:\t{args.topk}")
     
@@ -200,9 +218,8 @@ if __name__ == "__main__":
     pprint(models_y_paths)
     
     print('\nmeasuring alignment')
-    alignment_scores, alignment_indices = compute_alignment(models_x_paths, models_y_paths, args.metric, args.topk, args.precise)
+    alignment_scores, alignment_indices = compute_alignment(models_x_paths, models_y_paths, args.metric, args.topk, args.precise, args.layer_mode)
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     np.save(save_path, {"scores": alignment_scores, "indices": alignment_indices})
     print(f"saved to {save_path}")
-    

@@ -16,7 +16,7 @@ from measure_alignment import prepare_features, compute_score
 
 
     
-def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, precise=True):
+def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, precise=True, layer_mode='max'):
     """
     Args:
         x_feat_paths: list of paths to x features
@@ -26,6 +26,7 @@ def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, preci
         precise: if true use exact quantiling. (helpful to set to false if running on cpu)
             this is more of a feature to speed up matmul if using float32 
             used in measure_alignment.py
+        layer_mode: 'max' to find max alignment across all layers, 'final' to use only final layer
     Returns:
         alignment_scores: a numpy array of shape len(x_feat_paths) x len(y_feat_paths) x len(param_vec)
         alignment_indices: a numpy array of shape len(x_feat_paths) x len(y_feat_paths) x len(param_vec) x 2
@@ -69,6 +70,7 @@ def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, preci
                 
                 # Build kwargs with the appropriate parameter
                 kwargs = {param_name: param_value} if param_name else {}
+                kwargs['layer_mode'] = layer_mode
                 best_score, best_indices = compute_score(y_feats, x_feats, metric=metric, **kwargs)
                 
                 alignment_scores[i, j, param_idx] = best_score
@@ -104,8 +106,11 @@ if __name__ == "__main__":
     parser.add_argument("--pool_y",         type=str, default=None, choices=['avg', 'cls'])
 
     parser.add_argument("--modelset",       type=str, default="val", choices=["val", "test", "mini"])
-    parser.add_argument("--metric",         type=str, default="mutual_knn", choices=metrics.AlignmentMetrics.SUPPORTED_METRICS)
+    parser.add_argument("--metric",         type=str, default="mutual_knn", 
+                        choices=metrics.AlignmentMetrics.SUPPORTED_METRICS)
     parser.add_argument("--sweep_len",      type=int, default=10, help="Number of steps in parameter sweep")
+    parser.add_argument("--layer_mode",     type=str, default="max", choices=["max", "final"], 
+                        help="'max' finds best alignment across all layers, 'final' uses only final layer")
 
     parser.add_argument("--input_dir",      type=str, default="./results/features")
     parser.add_argument("--output_dir",     type=str, default="./results/alignment")
@@ -142,7 +147,7 @@ if __name__ == "__main__":
             args.output_dir, args.dataset, args.modelset,
             args.modality_x, args.pool_x, args.prompt_x,
             args.modality_y, args.pool_y, args.prompt_y,
-            args.metric, args.sweep_len
+            args.metric, args.sweep_len, args.layer_mode
     )
     
     if os.path.exists(save_path) and not args.force_remake:
@@ -153,14 +158,17 @@ if __name__ == "__main__":
     models_x = llm_models if args.modality_x == "language" else lvm_models
     models_y = llm_models if args.modality_y == "language" else lvm_models
     
-    models_x_paths = [utils.to_feature_filename(args.input_dir, args.dataset, args.subset, m, args.pool_x, args.prompt_x) for m in models_x]
-    models_y_paths = [utils.to_feature_filename(args.input_dir, args.dataset, args.subset, m, args.pool_y, args.prompt_y) for m in models_y]
+    models_x_paths = [utils.to_feature_filename(args.input_dir, args.dataset, args.subset, 
+                                                m, args.pool_x, args.prompt_x) for m in models_x]
+    models_y_paths = [utils.to_feature_filename(args.input_dir, args.dataset, args.subset, m, 
+                                                args.pool_y, args.prompt_y) for m in models_y]
     
     for fn in models_x_paths + models_y_paths:
         assert os.path.exists(fn), fn
     
     print(f"dataset:\t{args.dataset}")
     print(f"metric: \t{args.metric}")
+    print(f"layer_mode:\t{args.layer_mode}")
     if param_name:
         print(f"{param_name} sweep:\t{param_vec}")
     
@@ -170,7 +178,9 @@ if __name__ == "__main__":
     pprint(models_y_paths)
     
     print('\nmeasuring alignment')
-    alignment_scores, alignment_indices = compute_alignment_sweep(models_x_paths, models_y_paths, args.metric, param_vec, args.precise)
+    alignment_scores, alignment_indices = compute_alignment_sweep(models_x_paths, models_y_paths, 
+                                                                  args.metric, param_vec, args.precise, 
+                                                                  args.layer_mode)
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     np.save(save_path, {"scores": alignment_scores, "indices": alignment_indices, 'param_vec': param_vec, 'param_name': param_name})

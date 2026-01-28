@@ -10,3 +10,8 @@ accelerate
 sentencepiece
 protobuf
 bitsandbytes
+ipykernel
+matplotlib
+seaborn
+pandas
+numpy
