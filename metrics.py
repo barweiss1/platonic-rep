@@ -25,6 +25,7 @@ class AlignmentMetrics:
         "svcca",
         "edit_distance_knn",
         "diffusion_cka",
+        "softmax_cka",
     ]
     
     # Define which parameter each metric sweeps over and its range
@@ -33,9 +34,10 @@ class AlignmentMetrics:
         "mutual_knn": {"param": "topk", "min": 3, "max": 500},
         "lcs_knn": {"param": "topk", "min": 3, "max": 500},
         "cknna": {"param": "topk", "min": 3, "max": 500},
-        "edit_distance_knn": {"param": "topk", "min": 5, "max": 300},
-        "cka_rbf": {"param": "rbf_sigma", "min": 0.05, "max": 20.0},
+        "edit_distance_knn": {"param": "topk", "min": 5, "max": 500},
+        "cka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 50.0},
         "diffusion_cka": {"param": "topk", "min": 3, "max": 500},
+        "softmax_cka": {"param": "temperature", "min": 0.1, "max": 10.0},
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
@@ -151,6 +153,27 @@ class AlignmentMetrics:
     
     # add my similarity metrics here, alternating diffusion based cka
     @staticmethod
+    def softmax_cka(feats_A, feats_B, temperature, unbiased=False):
+        """
+        Computes the softmax-based CKA between features.
+        The inner products are converted to similarity matrices using softmax with a temperature parameter.
+        Args:
+            feats_A: A torch tensor of shape N x feat_dim
+            feats_B: A torch tensor of shape N x feat_dim
+            temperature: A float representing the temperature for softmax
+        Returns:
+            A float representing the softmax-based CKA similarity
+        """
+        K = torch.softmax((feats_A @ feats_A.T) / temperature, dim=1)
+        L = torch.softmax((feats_B @ feats_B.T) / temperature, dim=1)
+
+        sim_kl = diffusion_similarity(K, L, unbiased)
+        sim_kk = diffusion_similarity(K, K, unbiased)
+        sim_ll = diffusion_similarity(L, L, unbiased)
+                
+        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
+    
+    @staticmethod
     def diffusion_cka(feats_A, feats_B, topk, unbiased=False):
         n = feats_A.shape[0]
                 
@@ -162,25 +185,11 @@ class AlignmentMetrics:
         
         K = compute_nearest_neighbors_graph(feats_A, topk, use_distance=True)
         L = compute_nearest_neighbors_graph(feats_B, topk, use_distance=True)
-        device = feats_A.device
 
-        def diffusion_similarity(K, L):                         
-            if unbiased:            
-                K_hat = K.clone().fill_diagonal_(0.0)
-                L_hat = L.clone().fill_diagonal_(0.0)
-            else:
-                K_hat, L_hat = K, L
-            
-            D_K_mhalf  = torch.diag(torch.sum(K_hat, dim=1) ** (-0.5)).to(device)
-            D_L_mhalf  = torch.diag(torch.sum(L_hat, dim=1) ** (-0.5)).to(device)
 
-            sim = torch.trace(D_K_mhalf @ K @ D_K_mhalf @ D_L_mhalf@ L @ D_L_mhalf)
-            
-            return sim
-
-        sim_kl = diffusion_similarity(K, L)
-        sim_kk = diffusion_similarity(K, K)
-        sim_ll = diffusion_similarity(L, L)
+        sim_kl = diffusion_similarity(K, L, unbiased)
+        sim_kk = diffusion_similarity(K, K, unbiased)
+        sim_ll = diffusion_similarity(L, L, unbiased)
                 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
 
@@ -293,6 +302,36 @@ class AlignmentMetrics:
                 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
 
+
+def diffusion_similarity(K, L, unbiased=False):
+    """
+    Computes the similarity between two kernels K and L for alternating diffusion based methods.
+    Used for diffusion_cka and softmax_cka metrics.
+    Args:
+        K: Kernel matrix of shape (N, N)
+        L: Kernel matrix of shape (N, N)
+        unbiased: Whether to use the unbiased estimator
+    """
+    if unbiased:            
+        K_hat = K.clone().fill_diagonal_(0.0)
+        L_hat = L.clone().fill_diagonal_(0.0)
+    else:
+        K_hat, L_hat = K, L
+    
+    K_norm = normalize_diffusion_kernel(K_hat)
+    L_norm = normalize_diffusion_kernel(L_hat)
+
+    sim = torch.trace(K_norm @ L_norm)
+    
+    return sim
+
+def normalize_diffusion_kernel(K):
+    """ Compute the normalized kernel for diffusion based methods """
+    device = K.device
+    col_sum = torch.sum(K, dim=0)
+    col_sum[col_sum == 0] = 1.0  # avoid division by zero
+    D_K_mhalf  = torch.diag(col_sum ** (-0.5)).to(device)
+    return D_K_mhalf @ K @ D_K_mhalf
 
 def hsic_unbiased(K, L):
     """

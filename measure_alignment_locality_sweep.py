@@ -137,10 +137,15 @@ if __name__ == "__main__":
             # For topk, use integer steps
             param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).round().long().tolist()
             # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).round().long().tolist()
-        else:
-            # For continuous parameters like rbf_sigma, use float steps
+        elif param_name == 'temperature':
+            # For temperature, use linear steps
             param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
-            # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
+        elif param_name == 'rbf_sigma':
+            # For rbf_sigma, use geometric steps
+            # param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
+            param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
+        else:
+            raise ValueError(f"Unknown parameter name {param_name} for metric {args.metric}")
     else:
         # No sweep for this metric, just use a single default value
         param_vec = [None]
