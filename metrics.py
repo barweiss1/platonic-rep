@@ -24,16 +24,18 @@ class AlignmentMetrics:
         "cknna",
         "svcca",
         "edit_distance_knn",
+        "diffusion_cka",
     ]
     
     # Define which parameter each metric sweeps over and its range
     SWEEP_PARAMS = {
-        "cycle_knn": {"param": "topk", "min": 3, "max": 1000},
-        "mutual_knn": {"param": "topk", "min": 3, "max": 1000},
-        "lcs_knn": {"param": "topk", "min": 3, "max": 1000},
-        "cknna": {"param": "topk", "min": 3, "max": 1000},
+        "cycle_knn": {"param": "topk", "min": 3, "max": 500},
+        "mutual_knn": {"param": "topk", "min": 3, "max": 500},
+        "lcs_knn": {"param": "topk", "min": 3, "max": 500},
+        "cknna": {"param": "topk", "min": 3, "max": 500},
         "edit_distance_knn": {"param": "topk", "min": 5, "max": 300},
         "cka_rbf": {"param": "rbf_sigma", "min": 0.05, "max": 20.0},
+        "diffusion_cka": {"param": "topk", "min": 3, "max": 500},
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
@@ -147,7 +149,43 @@ class AlignmentMetrics:
         cka_value = hsic_kl / (torch.sqrt(hsic_kk * hsic_ll) + 1e-6)        
         return cka_value.item()
     
-    
+    # add my similarity metrics here, alternating diffusion based cka
+    @staticmethod
+    def diffusion_cka(feats_A, feats_B, topk, unbiased=False):
+        n = feats_A.shape[0]
+                
+        if topk < 2:
+            raise ValueError("Diffusion-CKA requires topk >= 2")
+        
+        if topk is None:
+            topk = feats_A.shape[0] - 1
+        
+        K = compute_nearest_neighbors_graph(feats_A, topk, use_distance=True)
+        L = compute_nearest_neighbors_graph(feats_B, topk, use_distance=True)
+        device = feats_A.device
+
+        def diffusion_similarity(K, L):                         
+            if unbiased:            
+                K_hat = K.clone().fill_diagonal_(0.0)
+                L_hat = L.clone().fill_diagonal_(0.0)
+            else:
+                K_hat, L_hat = K, L
+            
+            D_K_mhalf  = torch.diag(torch.sum(K_hat, dim=1) ** (-0.5)).to(device)
+            D_L_mhalf  = torch.diag(torch.sum(L_hat, dim=1) ** (-0.5)).to(device)
+
+            sim = torch.trace(D_K_mhalf @ K @ D_K_mhalf @ D_L_mhalf@ L @ D_L_mhalf)
+            
+            return sim
+
+        sim_kl = diffusion_similarity(K, L)
+        sim_kk = diffusion_similarity(K, K)
+        sim_ll = diffusion_similarity(L, L)
+                
+        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
+
+
+
     @staticmethod
     def unbiased_cka(*args, **kwargs):
         kwargs['unbiased'] = True
@@ -298,20 +336,48 @@ def compute_knn_accuracy(knn):
     return acc
     
 
-def compute_nearest_neighbors(feats, topk=1):
+def compute_nearest_neighbors(feats, topk=1, use_distance=False):
     """
     Compute the nearest neighbors of feats
     Args:
         feats: a torch tensor of shape N x D
         topk: the number of nearest neighbors to return
+        use_distance: if True, use Euclidean distance instead of correlation/similarity
     Returns:
         knn: a torch tensor of shape N x topk
     """
     assert feats.ndim == 2, f"Expected feats to be 2D, got {feats.ndim}"
-    knn = (
-        (feats @ feats.T).fill_diagonal_(-1e8).argsort(dim=1, descending=True)[:, :topk]
-    )
+    
+    if use_distance:
+        # Use negative squared distance for efficient computation
+        # ||x - y||^2 = ||x||^2 + ||y||^2 - 2<x,y>
+        feat_norm_sq = (feats ** 2).sum(dim=1, keepdim=True)
+        dist_sq = feat_norm_sq + feat_norm_sq.T - 2 * (feats @ feats.T)
+        # Use negative distance so we can still use descending=False for closest neighbors
+        knn = dist_sq.fill_diagonal_(1e8).argsort(dim=1, descending=False)[:, :topk]
+    else:
+        # Use correlation/similarity (original behavior)
+        knn = (
+            (feats @ feats.T).fill_diagonal_(-1e8).argsort(dim=1, descending=True)[:, :topk]
+        )
     return knn
+
+
+def compute_nearest_neighbors_graph(feats, topk=1, use_distance=True):
+    """
+    Compute the nearest neighbors graph of feats based on Euclidean distance
+    Args:
+        feats: a torch tensor of shape N x D
+        topk: the number of nearest neighbors to return
+        use_distance: if True, use Euclidean distance instead of correlation/similarity
+    Returns:
+        knn_graph: a torch tensor of shape N x N, where knn_graph[i, j] = 1 if j is a nearest neighbor of i
+    """
+    n = feats.shape[0]
+    knn = compute_nearest_neighbors(feats, topk, use_distance=use_distance)
+    knn_graph = torch.zeros(n, n, device=feats.device)
+    knn_graph.scatter_(1, knn, 1)
+    return knn_graph
 
 
 def longest_ordinal_sequence(X, Y):
