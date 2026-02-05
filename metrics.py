@@ -25,6 +25,8 @@ class AlignmentMetrics:
         "svcca",
         "edit_distance_knn",
         "diffusion_cka",
+        "ip_diffusion_cka",
+        "sym_ip_diffusion_cka",
         "softmax_cka",
     ]
     
@@ -37,7 +39,9 @@ class AlignmentMetrics:
         "edit_distance_knn": {"param": "topk", "min": 5, "max": 500},
         "cka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 50.0},
         "diffusion_cka": {"param": "topk", "min": 3, "max": 500},
-        "softmax_cka": {"param": "temperature", "min": 0.1, "max": 10.0},
+        "ip_diffusion_cka": {"param": "topk", "min": 3, "max": 500},
+        "sym_ip_diffusion_cka": {"param": "topk", "min": 3, "max": 500},
+        "softmax_cka": {"param": "temperature", "min": 0.01, "max": 1.0},
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
@@ -54,6 +58,18 @@ class AlignmentMetrics:
         if metric == "cka_rbf":
             kwargs['kernel_metric'] = 'rbf'
             return AlignmentMetrics.cka(*args, **kwargs)
+        elif metric == "diffusion_cka":
+            kwargs['use_distance'] = True
+            kwargs['symmetric'] = False
+            return AlignmentMetrics.diffusion_cka(*args, **kwargs)
+        elif metric == "ip_diffusion_cka":
+            kwargs['use_distance'] = False
+            kwargs['symmetric'] = False
+            return AlignmentMetrics.diffusion_cka(*args, **kwargs)
+        elif metric == "sym_ip_diffusion_cka":
+            kwargs['use_distance'] = False
+            kwargs['symmetric'] = True
+            return AlignmentMetrics.diffusion_cka(*args, **kwargs)
         
         return getattr(AlignmentMetrics, metric)(*args, **kwargs)
 
@@ -124,9 +140,15 @@ class AlignmentMetrics:
             K = torch.mm(feats_A, feats_A.T)
             L = torch.mm(feats_B, feats_B.T)
         elif kernel_metric == 'rbf':
-            # COMPUTES RBF KERNEL
-            K = torch.cdist(feats_A, feats_A)
-            L = torch.cdist(feats_B, feats_B)
+            # COMPUTES RBF KERNEL with higher precision to avoid numerical issues
+            # Convert to float64 for stable computation
+            original_dtype = feats_A.dtype
+            feats_A_hp = feats_A.double()
+            feats_B_hp = feats_B.double()
+            
+            K = torch.cdist(feats_A_hp, feats_A_hp)
+            L = torch.cdist(feats_B_hp, feats_B_hp)
+            
             if median:
                 # use median heuristic for bandwidth using lower triangular part (excluding diagonal)
                 tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
@@ -135,8 +157,14 @@ class AlignmentMetrics:
             else:
                 rbf_sigma_K = rbf_sigma
                 rbf_sigma_L = rbf_sigma
+            
+            # Compute RBF kernel in float64 precision to avoid underflow issues in multiplication
             K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
             L = torch.exp(- L ** 2 / (2 * rbf_sigma_L ** 2))
+            
+            # Convert back to original dtype
+            # K = K.to(original_dtype)
+            # L = L.to(original_dtype)
         else:
             raise ValueError(f"Invalid kernel metric {kernel_metric}")
 
@@ -147,7 +175,7 @@ class AlignmentMetrics:
         hsic_kl = hsic_fn(K, L)
 
         # Compute CKA
-        #print('hsic', hsic_kl)
+        print(f'rbf_sigma: {rbf_sigma}, hsic_kl: {hsic_kl.item()}, hsic_kk: {hsic_kk.item()}, hsic_ll: {hsic_ll.item()}')
         cka_value = hsic_kl / (torch.sqrt(hsic_kk * hsic_ll) + 1e-6)        
         return cka_value.item()
     
@@ -174,7 +202,22 @@ class AlignmentMetrics:
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
     
     @staticmethod
-    def diffusion_cka(feats_A, feats_B, topk, unbiased=False):
+    def diffusion_cka(
+        feats_A, 
+        feats_B, 
+        topk, 
+        unbiased=False,
+        use_distance=True,
+        symmetric=False):
+        """
+        Computes the diffusion-based CKA between features.
+        Args:
+            feats_A: A torch tensor of shape N x feat_dim
+            feats_B: A torch tensor of shape N x feat_dim
+            topk: The number of nearest neighbors to consider in the diffusion process
+        Returns:    
+            A float representing the diffusion-based CKA similarity
+        """
         n = feats_A.shape[0]
                 
         if topk < 2:
@@ -183,8 +226,12 @@ class AlignmentMetrics:
         if topk is None:
             topk = feats_A.shape[0] - 1
         
-        K = compute_nearest_neighbors_graph(feats_A, topk, use_distance=True)
-        L = compute_nearest_neighbors_graph(feats_B, topk, use_distance=True)
+        K = compute_nearest_neighbors_graph(feats_A, topk, 
+                                            use_distance=use_distance, 
+                                            symmetric=symmetric)
+        L = compute_nearest_neighbors_graph(feats_B, topk, 
+                                            use_distance=use_distance, 
+                                            symmetric=symmetric)
 
 
         sim_kl = diffusion_similarity(K, L, unbiased)
@@ -192,7 +239,6 @@ class AlignmentMetrics:
         sim_ll = diffusion_similarity(L, L, unbiased)
                 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
-
 
 
     @staticmethod
@@ -402,7 +448,11 @@ def compute_nearest_neighbors(feats, topk=1, use_distance=False):
     return knn
 
 
-def compute_nearest_neighbors_graph(feats, topk=1, use_distance=True):
+def compute_nearest_neighbors_graph(
+        feats, 
+        topk=3, 
+        use_distance=True,
+        symmetric=True):
     """
     Compute the nearest neighbors graph of feats based on Euclidean distance
     Args:
@@ -416,6 +466,8 @@ def compute_nearest_neighbors_graph(feats, topk=1, use_distance=True):
     knn = compute_nearest_neighbors(feats, topk, use_distance=use_distance)
     knn_graph = torch.zeros(n, n, device=feats.device)
     knn_graph.scatter_(1, knn, 1)
+    if symmetric:
+        knn_graph = torch.maximum(knn_graph, knn_graph.T)
     return knn_graph
 
 
