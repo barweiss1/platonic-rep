@@ -28,6 +28,7 @@ class AlignmentMetrics:
         "ip_diffusion_cka",
         "sym_ip_diffusion_cka",
         "softmax_cka",
+        "dka_rbf",
     ]
     
     # Define which parameter each metric sweeps over and its range
@@ -45,6 +46,7 @@ class AlignmentMetrics:
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
+        "dka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 50.0},  # RBF kernel bandwidth,
     }
 
     @staticmethod
@@ -140,31 +142,9 @@ class AlignmentMetrics:
             K = torch.mm(feats_A, feats_A.T)
             L = torch.mm(feats_B, feats_B.T)
         elif kernel_metric == 'rbf':
-            # COMPUTES RBF KERNEL with higher precision to avoid numerical issues
-            # Convert to float64 for stable computation
-            original_dtype = feats_A.dtype
-            feats_A_hp = feats_A.double()
-            feats_B_hp = feats_B.double()
-            
-            K = torch.cdist(feats_A_hp, feats_A_hp)
-            L = torch.cdist(feats_B_hp, feats_B_hp)
-            
-            if median:
-                # use median heuristic for bandwidth using lower triangular part (excluding diagonal)
-                tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
-                rbf_sigma_K = torch.median(K[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
-                rbf_sigma_L = torch.median(L[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
-            else:
-                rbf_sigma_K = rbf_sigma
-                rbf_sigma_L = rbf_sigma
-            
-            # Compute RBF kernel in float64 precision to avoid underflow issues in multiplication
-            K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
-            L = torch.exp(- L ** 2 / (2 * rbf_sigma_L ** 2))
-            
-            # Convert back to original dtype
-            # K = K.to(original_dtype)
-            # L = L.to(original_dtype)
+            K = compute_rbf_kernel(feats_A, rbf_sigma=rbf_sigma, median=median)
+            L = compute_rbf_kernel(feats_B, rbf_sigma=rbf_sigma, median=median)
+
         else:
             raise ValueError(f"Invalid kernel metric {kernel_metric}")
 
@@ -200,7 +180,25 @@ class AlignmentMetrics:
         sim_ll = diffusion_similarity(L, L, unbiased)
                 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
-    
+
+    @staticmethod
+    def dka_rbf(feats_A, feats_B, rbf_sigma, unbiased=False, median=True):
+        """
+        Computes the diffusion-based CKA between features.
+        Args:
+            feats_A: A torch tensor of shape N x feat_dim
+            feats_B: A torch tensor of shape N x feat_dim
+            rbf_sigma: A float representing the bandwidth scaling factor for the RBF kernel
+        """
+        K = compute_rbf_kernel(feats_A, rbf_sigma=rbf_sigma, median=median)
+        L = compute_rbf_kernel(feats_B, rbf_sigma=rbf_sigma, median=median)
+
+        sim_kl = diffusion_similarity(K, L, unbiased)
+        sim_kk = diffusion_similarity(K, K, unbiased)
+        sim_ll = diffusion_similarity(L, L, unbiased)
+
+        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-9).item()
+
     @staticmethod
     def diffusion_cka(
         feats_A, 
@@ -470,6 +468,37 @@ def compute_nearest_neighbors_graph(
         knn_graph = torch.maximum(knn_graph, knn_graph.T)
     return knn_graph
 
+
+def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True):
+    """
+        Computes the rbf kernel from features, 
+        with an option to use the median heuristic for bandwidth selection.
+        The kernel is in double precision to avoid underflow issues in the exponential computation, 
+        and in further processing (e.g. multiplication with another kernel).
+        Args:
+            feats: a torch tensor of shape N x D
+            rbf_sigma: a float representing the bandwidth scaling factor for the RBF kernel
+            median: if True, use the median heuristic to set the bandwidth based on pairwise distances
+        Returns:
+            K: a torch tensor of shape N x N representing the RBF kernel matrix
+    """
+    # COMPUTES RBF KERNEL with higher precision to avoid numerical issues
+    # Convert to float64 for stable computation
+    feats_hp = feats.double()
+
+    K = torch.cdist(feats_hp, feats_hp)
+
+    if median:
+        # use median heuristic for bandwidth using lower triangular part (excluding diagonal)
+        tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
+        rbf_sigma_K = torch.median(K[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
+    else:
+        rbf_sigma_K = rbf_sigma
+    
+    # Compute RBF kernel in float64 precision to avoid underflow issues in multiplication
+    K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
+
+    return K
 
 def longest_ordinal_sequence(X, Y):
     """ For each pair in X and Y, compute the length of the longest sub-sequence (LCS) """
