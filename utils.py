@@ -25,11 +25,13 @@ def to_feature_filename(output_dir, dataset, subset, model_name, pool=None, prom
 def to_alignment_filename(output_dir, dataset, modelset, 
                           modality_x, pool_x, prompt_x, 
                           modality_y, pool_y, prompt_y, 
-                          metric, sweep_len, layer_mode='max'):
+                          metric, sweep_len, layer_mode='max',
+                          run_name='test'):
     save_path = os.path.join(
         output_dir,
         dataset,
         modelset,
+        run_name,
         f"{modality_x}_pool-{pool_x}_prompt-{prompt_x}_{modality_y}_pool-{pool_y}_prompt-{prompt_y}_layer-{layer_mode}",
         f"{metric}_sweep{sweep_len}.npy"
     )

@@ -111,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--sweep_len",      type=int, default=10, help="Number of steps in parameter sweep")
     parser.add_argument("--layer_mode",     type=str, default="max", choices=["max", "final"], 
                         help="'max' finds best alignment across all layers, 'final' uses only final layer")
+    parser.add_argument("--run_name",      type=str, default="test", help="Subdirectory name for this run's results")
 
     parser.add_argument("--input_dir",      type=str, default="./results/features")
     parser.add_argument("--output_dir",     type=str, default="./results/alignment")
@@ -154,7 +155,7 @@ if __name__ == "__main__":
             args.output_dir, args.dataset, args.modelset,
             args.modality_x, args.pool_x, args.prompt_x,
             args.modality_y, args.pool_y, args.prompt_y,
-            args.metric, args.sweep_len, args.layer_mode
+            args.metric, args.sweep_len, args.layer_mode, args.run_name
     )
     
     if os.path.exists(save_path) and not args.force_remake:
