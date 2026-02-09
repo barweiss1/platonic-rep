@@ -24,11 +24,11 @@ class AlignmentMetrics:
         "cknna",
         "svcca",
         "edit_distance_knn",
-        "diffusion_cka",
-        "ip_diffusion_cka",
-        "sym_ip_diffusion_cka",
-        "softmax_cka",
-        "dka_rbf",
+        "nn_rwka",
+        "ip_nn_rwka",
+        "asym_nn_rwka",
+        "softmax_rwka",
+        "rbf_rwka",
     ]
     
     # Define which parameter each metric sweeps over and its range
@@ -39,14 +39,14 @@ class AlignmentMetrics:
         "cknna": {"param": "topk", "min": 3, "max": 500},
         "edit_distance_knn": {"param": "topk", "min": 5, "max": 500},
         "cka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 5.0},
-        "diffusion_cka": {"param": "topk", "min": 3, "max": 500},
-        "ip_diffusion_cka": {"param": "topk", "min": 3, "max": 500},
-        "sym_ip_diffusion_cka": {"param": "topk", "min": 3, "max": 500},
-        "softmax_cka": {"param": "temperature", "min": 0.01, "max": 1.0},
+        "nn_rwka": {"param": "topk", "min": 3, "max": 500},
+        "ip_nn_rwka": {"param": "topk", "min": 3, "max": 500},
+        "asym_nn_rwka": {"param": "topk", "min": 3, "max": 500},
+        "softmax_rwka": {"param": "temperature", "min": 0.01, "max": 1.0},
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
-        "dka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 5.0},  # RBF kernel bandwidth,
+        "rbf_rwka": {"param": "rbf_sigma", "min": 0.1, "max": 5.0},  # RBF kernel bandwidth,
     }
 
     @staticmethod
@@ -60,18 +60,18 @@ class AlignmentMetrics:
         if metric == "cka_rbf":
             kwargs['kernel_metric'] = 'rbf'
             return AlignmentMetrics.cka(*args, **kwargs)
-        elif metric == "diffusion_cka":
+        elif metric == "nn_rwka":
             kwargs['use_distance'] = True
-            kwargs['symmetric'] = False
-            return AlignmentMetrics.diffusion_cka(*args, **kwargs)
-        elif metric == "ip_diffusion_cka":
-            kwargs['use_distance'] = False
-            kwargs['symmetric'] = False
-            return AlignmentMetrics.diffusion_cka(*args, **kwargs)
-        elif metric == "sym_ip_diffusion_cka":
+            kwargs['symmetric'] = True
+            return AlignmentMetrics.nn_rwka(*args, **kwargs)
+        elif metric == "ip_nn_rwka":
             kwargs['use_distance'] = False
             kwargs['symmetric'] = True
-            return AlignmentMetrics.diffusion_cka(*args, **kwargs)
+            return AlignmentMetrics.nn_rwka(*args, **kwargs)
+        elif metric == "asym_nn_rwka":
+            kwargs['use_distance'] = True
+            kwargs['symmetric'] = False
+            return AlignmentMetrics.nn_rwka(*args, **kwargs)
         
         return getattr(AlignmentMetrics, metric)(*args, **kwargs)
 
@@ -159,9 +159,9 @@ class AlignmentMetrics:
         cka_value = hsic_kl / (torch.sqrt(hsic_kk * hsic_ll) + 1e-6)        
         return cka_value.item()
     
-    # add my similarity metrics here, alternating diffusion based cka
+    # ---------------------- My Similarity Metrics ----------------------
     @staticmethod
-    def softmax_cka(feats_A, feats_B, temperature, unbiased=False):
+    def softmax_rwka(feats_A, feats_B, temperature, unbiased=False):
         """
         Computes the softmax-based CKA between features.
         The inner products are converted to similarity matrices using softmax with a temperature parameter.
@@ -175,14 +175,14 @@ class AlignmentMetrics:
         K = torch.softmax((feats_A @ feats_A.T) / temperature, dim=1)
         L = torch.softmax((feats_B @ feats_B.T) / temperature, dim=1)
 
-        sim_kl = diffusion_similarity(K, L, unbiased)
-        sim_kk = diffusion_similarity(K, K, unbiased)
-        sim_ll = diffusion_similarity(L, L, unbiased)
+        sim_kl = rw_similarity(K, L, unbiased)
+        sim_kk = rw_similarity(K, K, unbiased)
+        sim_ll = rw_similarity(L, L, unbiased)
                 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
 
     @staticmethod
-    def dka_rbf(feats_A, feats_B, rbf_sigma, unbiased=False, median=True):
+    def rbf_rwka(feats_A, feats_B, rbf_sigma, unbiased=False, median=True):
         """
         Computes the diffusion-based CKA between features.
         Args:
@@ -193,14 +193,14 @@ class AlignmentMetrics:
         K = compute_rbf_kernel(feats_A, rbf_sigma=rbf_sigma, median=median)
         L = compute_rbf_kernel(feats_B, rbf_sigma=rbf_sigma, median=median)
 
-        sim_kl = diffusion_similarity(K, L, unbiased)
-        sim_kk = diffusion_similarity(K, K, unbiased)
-        sim_ll = diffusion_similarity(L, L, unbiased)
+        sim_kl = rw_similarity(K, L, unbiased)
+        sim_kk = rw_similarity(K, K, unbiased)
+        sim_ll = rw_similarity(L, L, unbiased)
 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-9).item()
 
     @staticmethod
-    def diffusion_cka(
+    def nn_rwka(
         feats_A, 
         feats_B, 
         topk, 
@@ -208,18 +208,18 @@ class AlignmentMetrics:
         use_distance=True,
         symmetric=False):
         """
-        Computes the diffusion-based CKA between features.
+        Computes the RWKA on the k-NN graph between features.
         Args:
             feats_A: A torch tensor of shape N x feat_dim
             feats_B: A torch tensor of shape N x feat_dim
-            topk: The number of nearest neighbors to consider in the diffusion process
+            topk: The number of nearest neighbors to consider in the random walk
         Returns:    
-            A float representing the diffusion-based CKA similarity
+            A float representing the NN-RWKA similarity
         """
         n = feats_A.shape[0]
                 
         if topk < 2:
-            raise ValueError("Diffusion-CKA requires topk >= 2")
+            raise ValueError("NN-RWKA requires topk >= 2")
         
         if topk is None:
             topk = feats_A.shape[0] - 1
@@ -232,9 +232,9 @@ class AlignmentMetrics:
                                             symmetric=symmetric)
 
 
-        sim_kl = diffusion_similarity(K, L, unbiased)
-        sim_kk = diffusion_similarity(K, K, unbiased)
-        sim_ll = diffusion_similarity(L, L, unbiased)
+        sim_kl = rw_similarity(K, L, unbiased)
+        sim_kk = rw_similarity(K, K, unbiased)
+        sim_ll = rw_similarity(L, L, unbiased)
                 
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
 
@@ -347,10 +347,10 @@ class AlignmentMetrics:
         return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
 
 
-def diffusion_similarity(K, L, unbiased=False):
+def rw_similarity(K, L, unbiased=False):
     """
-    Computes the similarity between two kernels K and L for alternating diffusion based methods.
-    Used for diffusion_cka and softmax_cka metrics.
+    Computes the similarity between two kernels K and L for random-walk based methods.
+    Used for random walk kernel alignment (RWKA) similarity.
     Args:
         K: Kernel matrix of shape (N, N)
         L: Kernel matrix of shape (N, N)
@@ -362,15 +362,15 @@ def diffusion_similarity(K, L, unbiased=False):
     else:
         K_hat, L_hat = K, L
     
-    K_norm = normalize_diffusion_kernel(K_hat)
-    L_norm = normalize_diffusion_kernel(L_hat)
+    K_norm = normalize_random_walk_kernel(K_hat)
+    L_norm = normalize_random_walk_kernel(L_hat)
 
     sim = torch.trace(K_norm @ L_norm)
     
     return sim
 
-def normalize_diffusion_kernel(K):
-    """ Compute the normalized kernel for diffusion based methods """
+def normalize_random_walk_kernel(K):
+    """ Compute the normalized kernel for random walk based methods """
     device = K.device
     col_sum = torch.sum(K, dim=0)
     col_sum[col_sum == 0] = 1.0  # avoid division by zero
