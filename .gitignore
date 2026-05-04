@@ -1,5 +1,6 @@
 *.sh
 data/
+.venv
 results/
 *pt
 *egg-info/**
