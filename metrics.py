@@ -38,7 +38,7 @@ class AlignmentMetrics:
         "lcs_knn": {"param": "topk", "min": 3, "max": 500},
         "cknna": {"param": "topk", "min": 3, "max": 500},
         "edit_distance_knn": {"param": "topk", "min": 5, "max": 500},
-        "cka_rbf": {"param": "rbf_sigma", "min": 0.1, "max": 5.0},
+        "cka_rbf": {"param": "rbf_sigma", "min": 0.01, "max": 5.0},
         "nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "ip_nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "asym_nn_rwka": {"param": "topk", "min": 3, "max": 500},
@@ -46,7 +46,7 @@ class AlignmentMetrics:
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
-        "rbf_rwka": {"param": "rbf_sigma", "min": 0.1, "max": 5.0},  # RBF kernel bandwidth,
+        "rbf_rwka": {"param": "rbf_sigma", "min": 0.01, "max": 5.0},  # RBF kernel bandwidth,
     }
 
     @staticmethod

@@ -1,3 +1,4 @@
+import json
 import os
 import argparse 
 
@@ -113,6 +114,8 @@ if __name__ == "__main__":
                         help="'max' finds best alignment across all layers, 'final' uses only final layer")
     parser.add_argument("--run_name",      type=str, default="test", help="Subdirectory name for this run's results")
 
+    parser.add_argument("--logscale",   action="store_true", help="Whether to use logscale for parameter sweep (e.g., for temperature or rbf_sigma)")
+
     parser.add_argument("--input_dir",      type=str, default="./results/features")
     parser.add_argument("--output_dir",     type=str, default="./results/alignment")
     parser.add_argument("--precise",        action="store_true")
@@ -136,14 +139,19 @@ if __name__ == "__main__":
         param_max = sweep_config['max']
         if param_name == 'topk':
             # For topk, use integer steps
-            param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).round().long().tolist()
-            # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).round().long().tolist()
+            if args.logscale:
+                param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).round().long().tolist()
+            else:
+                param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).round().long().tolist()
         elif param_name == 'temperature':
             # For temperature, use linear steps
             param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
         elif param_name == 'rbf_sigma':
             # For rbf_sigma, use geometric steps
-            param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
+            if args.logscale:
+                param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
+            else:
+                param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
             # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
         else:
             raise ValueError(f"Unknown parameter name {param_name} for metric {args.metric}")
@@ -192,4 +200,8 @@ if __name__ == "__main__":
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     np.save(save_path, {"scores": alignment_scores, "indices": alignment_indices, 'param_vec': param_vec, 'param_name': param_name})
+    # save arguments for reproducibility
+    save_args_path = save_path.replace(".npy", "_args.json")
+    with open(save_args_path, "w") as f:
+        json.dump(vars(args), f, indent=4)
     print(f"saved to {save_path}")
