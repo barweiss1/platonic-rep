@@ -140,7 +140,7 @@ if __name__ == "__main__":
         if param_name == 'topk':
             # For topk, use integer steps
             if args.logscale:
-                param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).round().long().tolist()
+                param_vec = torch.from_numpy(np.geomspace(param_min, param_max, num=args.sweep_len)).round().long().tolist()
             else:
                 param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).round().long().tolist()
         elif param_name == 'temperature':
@@ -149,7 +149,7 @@ if __name__ == "__main__":
         elif param_name == 'rbf_sigma':
             # For rbf_sigma, use geometric steps
             if args.logscale:
-                param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
+                param_vec = torch.from_numpy(np.geomspace(param_min, param_max, num=args.sweep_len)).tolist()
             else:
                 param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
             # param_vec = np.geomspace(param_min, param_max, num=args.sweep_len).tolist()
