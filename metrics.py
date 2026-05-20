@@ -28,6 +28,7 @@ class AlignmentMetrics:
         "ip_nn_rwka",
         "asym_nn_rwka",
         "softmax_rwka",
+        "softmax_cka",
         "rbf_rwka",
     ]
     
@@ -42,7 +43,8 @@ class AlignmentMetrics:
         "nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "ip_nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "asym_nn_rwka": {"param": "topk", "min": 3, "max": 500},
-        "softmax_rwka": {"param": "temperature", "min": 0.01, "max": 1.0},
+        "softmax_cka": {"param": "temperature", "min": 0.05, "max": 5.0},  # Softmax temperature
+        "softmax_rwka": {"param": "temperature", "min": 0.05, "max": 5.0},
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
@@ -163,6 +165,28 @@ class AlignmentMetrics:
     @staticmethod
     def softmax_rwka(feats_A, feats_B, temperature, unbiased=False):
         """
+        Computes the softmax-based RWKA between features.
+        The inner products are converted to similarity matrices using softmax with a temperature parameter.
+        Args:
+            feats_A: A torch tensor of shape N x feat_dim
+            feats_B: A torch tensor of shape N x feat_dim
+            temperature: A float representing the temperature for softmax
+        Returns:
+            A float representing the softmax-based RWKA similarity
+        """
+        K = compute_softmax_kernel(feats=feats_A, temperature=temperature, median=True)
+        L = compute_softmax_kernel(feats=feats_B, temperature=temperature, median=True)
+
+        sim_kl = rw_similarity(K, L, unbiased)
+        sim_kk = rw_similarity(K, K, unbiased)
+        sim_ll = rw_similarity(L, L, unbiased)
+                
+        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-9).item()
+    
+
+    @staticmethod
+    def softmax_cka(feats_A, feats_B, temperature, unbiased=False):
+        """
         Computes the softmax-based CKA between features.
         The inner products are converted to similarity matrices using softmax with a temperature parameter.
         Args:
@@ -172,14 +196,17 @@ class AlignmentMetrics:
         Returns:
             A float representing the softmax-based CKA similarity
         """
-        K = torch.softmax((feats_A @ feats_A.T) / temperature, dim=1)
-        L = torch.softmax((feats_B @ feats_B.T) / temperature, dim=1)
+        K = compute_softmax_kernel(feats=feats_A, temperature=temperature, median=True)
+        L = compute_softmax_kernel(feats=feats_B, temperature=temperature, median=True)
 
-        sim_kl = rw_similarity(K, L, unbiased)
-        sim_kk = rw_similarity(K, K, unbiased)
-        sim_ll = rw_similarity(L, L, unbiased)
+        hsic_fn = hsic_unbiased if unbiased else hsic_biased
+        sim_kl = hsic_fn(K, L)
+        sim_kk = hsic_fn(K, K)
+        sim_ll = hsic_fn(L, L)
                 
-        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
+        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-9).item()
+    
+
 
     @staticmethod
     def rbf_rwka(feats_A, feats_B, rbf_sigma, unbiased=False, median=True):
@@ -499,6 +526,36 @@ def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True):
     K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
 
     return K
+
+
+def compute_softmax_kernel(feats, temperature=0.1, median=True):
+    """
+    Computes the softmax kernel from features.
+    Args:
+        feats: a torch tensor of shape N x D
+        temperature: a float representing the temperature for the softmax
+        median: if True, use the median heuristic to set the temperature based on pairwise correlations
+    Returns:
+        K: a torch tensor of shape N x N representing the softmax kernel matrix
+    """
+    # Convert to float64 for stable computation
+    feats_hp = feats.double()
+
+    # Compute cosine similarities
+    corr = feats_hp @ feats_hp.T
+
+    if median:
+        # use median heuristic for temperature using lower triangular part (excluding diagonal)
+        tril_indices = torch.tril_indices(corr.shape[0], corr.shape[1], offset=-1)
+        temperature = torch.median(corr[tril_indices[0], tril_indices[1]]).item() * temperature
+    else:
+        temperature = temperature
+
+    # Compute softmax kernel in float64 precision to avoid underflow issues in multiplication
+    K = torch.softmax(corr / temperature, dim=1)
+
+    return K
+
 
 def longest_ordinal_sequence(X, Y):
     """ For each pair in X and Y, compute the length of the longest sub-sequence (LCS) """
