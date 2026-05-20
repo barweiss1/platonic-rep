@@ -43,8 +43,8 @@ class AlignmentMetrics:
         "nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "ip_nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "asym_nn_rwka": {"param": "topk", "min": 3, "max": 500},
-        "softmax_cka": {"param": "temperature", "min": 0.05, "max": 5.0},  # Softmax temperature
-        "softmax_rwka": {"param": "temperature", "min": 0.05, "max": 5.0},
+        "softmax_cka": {"param": "temperature", "min": 0.01, "max": 10.0},  # Softmax temperature
+        "softmax_rwka": {"param": "temperature", "min": 0.01, "max": 10.0},
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
@@ -547,7 +547,7 @@ def compute_softmax_kernel(feats, temperature=0.1, median=True):
     if median:
         # use median heuristic for temperature using lower triangular part (excluding diagonal)
         tril_indices = torch.tril_indices(corr.shape[0], corr.shape[1], offset=-1)
-        temperature = torch.median(corr[tril_indices[0], tril_indices[1]]).item() * temperature
+        temperature = torch.median(corr[tril_indices[0], tril_indices[1].abs()]).item() * temperature
     else:
         temperature = temperature
 
