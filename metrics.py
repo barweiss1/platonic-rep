@@ -17,10 +17,12 @@ class AlignmentMetrics:
     SUPPORTED_METRICS = [
         "cycle_knn",
         "mutual_knn",
+        "mutual_knn_dist",
         "lcs_knn",
         "cka",
         "cka_rbf",
         "unbiased_cka",
+        "cka_rbf_quantile",
         "cknna",
         "svcca",
         "edit_distance_knn",
@@ -30,26 +32,35 @@ class AlignmentMetrics:
         "softmax_rwka",
         "softmax_cka",
         "rbf_rwka",
+        "rbf_rwka_quantile",
     ]
     
     # Define which parameter each metric sweeps over and its range
     SWEEP_PARAMS = {
         "cycle_knn": {"param": "topk", "min": 3, "max": 500},
         "mutual_knn": {"param": "topk", "min": 3, "max": 500},
+        "mutual_knn_dist": {"param": "topk", "min": 3, "max": 500},
         "lcs_knn": {"param": "topk", "min": 3, "max": 500},
         "cknna": {"param": "topk", "min": 3, "max": 500},
         "edit_distance_knn": {"param": "topk", "min": 5, "max": 500},
         "cka_rbf": {"param": "rbf_sigma", "min": 0.01, "max": 5.0},
+        "cka_rbf_quantile": {"param": "quantile", "min": 0.01, "max": 0.7},
         "nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "ip_nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "asym_nn_rwka": {"param": "topk", "min": 3, "max": 500},
-        "softmax_cka": {"param": "temperature", "min": 0.01, "max": 10.0},  # Softmax temperature
-        "softmax_rwka": {"param": "temperature", "min": 0.01, "max": 10.0},
+        "softmax_rwka": {"param": "temperature", "min": 1e-5, "max": 10.0},
+        "softmax_cka": {"param": "temperature", "min": 1e-5, "max": 10.0},        
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
         "rbf_rwka": {"param": "rbf_sigma", "min": 0.01, "max": 5.0},  # RBF kernel bandwidth,
+        "rbf_rwka_quantile": {"param": "quantile", "min": 0.01, "max": 0.7},
     }
+
+    def _to_torch_tensor(feats):
+        if torch.is_tensor(feats):
+            return feats
+        return torch.from_numpy(np.asarray(feats))
 
     @staticmethod
     def measure(metric, *args, **kwargs):
@@ -57,11 +68,17 @@ class AlignmentMetrics:
 
         if metric not in AlignmentMetrics.SUPPORTED_METRICS:
             raise ValueError(f"Unrecognized metric: {metric}")
+        
+        feats_A = AlignmentMetrics._to_torch_tensor(feats_A)
+        feats_B = AlignmentMetrics._to_torch_tensor(feats_B)
 
         # Map cka_rbf to cka with rbf kernel
         if metric == "cka_rbf":
             kwargs['kernel_metric'] = 'rbf'
             return AlignmentMetrics.cka(*args, **kwargs)
+        elif metric == "cka_rbf_quantile":
+            kwargs['kernel_metric'] = 'rbf'
+            return AlignmentMetrics.cka(feats_A, feats_B, *args, **kwargs)
         elif metric == "nn_rwka":
             kwargs['use_distance'] = True
             kwargs['symmetric'] = True
@@ -74,6 +91,11 @@ class AlignmentMetrics:
             kwargs['use_distance'] = True
             kwargs['symmetric'] = False
             return AlignmentMetrics.nn_rwka(*args, **kwargs)
+        elif metric == "rbf_rwka_quantile":
+            return AlignmentMetrics.rbf_rwka(feats_A, feats_B, *args, **kwargs)
+        elif metric == "mutual_knn_dist":
+            kwargs['use_distance'] = True
+            return AlignmentMetrics.mutual_knn(feats_A, feats_B, *args, **kwargs)
         
         return getattr(AlignmentMetrics, metric)(*args, **kwargs)
 
@@ -136,7 +158,8 @@ class AlignmentMetrics:
     
     
     @staticmethod
-    def cka(feats_A, feats_B, kernel_metric='ip', rbf_sigma=1.0, unbiased=False, median=True):
+    @staticmethod
+    def cka(feats_A, feats_B, kernel_metric='ip', rbf_sigma=1.0, unbiased=False, median=True, quantile=None):
         """Computes the unbiased Centered Kernel Alignment (CKA) between features."""
         
         if kernel_metric == 'ip':
@@ -144,8 +167,8 @@ class AlignmentMetrics:
             K = torch.mm(feats_A, feats_A.T)
             L = torch.mm(feats_B, feats_B.T)
         elif kernel_metric == 'rbf':
-            K = compute_rbf_kernel(feats_A, rbf_sigma=rbf_sigma, median=median)
-            L = compute_rbf_kernel(feats_B, rbf_sigma=rbf_sigma, median=median)
+            K = compute_rbf_kernel(feats_A, rbf_sigma=rbf_sigma, median=median, quantile=quantile)
+            L = compute_rbf_kernel(feats_B, rbf_sigma=rbf_sigma, median=median, quantile=quantile)
 
         else:
             raise ValueError(f"Invalid kernel metric {kernel_metric}")
@@ -157,31 +180,47 @@ class AlignmentMetrics:
         hsic_kl = hsic_fn(K, L)
 
         # Compute CKA
-        print(f'rbf_sigma: {rbf_sigma}, hsic_kl: {hsic_kl.item()}, hsic_kk: {hsic_kk.item()}, hsic_ll: {hsic_ll.item()}')
-        cka_value = hsic_kl / (torch.sqrt(hsic_kk * hsic_ll) + 1e-6)        
+        # print(f'rbf_sigma: {rbf_sigma}, hsic_kl: {hsic_kl.item()}, hsic_kk: {hsic_kk.item()}, hsic_ll: {hsic_ll.item()}')
+        denominator = torch.sqrt(hsic_kk * hsic_ll).item()
+        denominator = check_division_by_zero_warning("CKA", denominator)
+        cka_value = hsic_kl / denominator        
         return cka_value.item()
     
     # ---------------------- My Similarity Metrics ----------------------
     @staticmethod
-    def softmax_rwka(feats_A, feats_B, temperature, unbiased=False):
+    def softmax_rwka(feats_A, feats_B, temperature, unbiased=False, range_based=False):
         """
-        Computes the softmax-based RWKA between features.
+        Computes the softmax-based CKA between features.
         The inner products are converted to similarity matrices using softmax with a temperature parameter.
         Args:
             feats_A: A torch tensor of shape N x feat_dim
             feats_B: A torch tensor of shape N x feat_dim
             temperature: A float representing the temperature for softmax
         Returns:
-            A float representing the softmax-based RWKA similarity
+            A float representing the softmax-based CKA similarity
         """
-        K = compute_softmax_kernel(feats=feats_A, temperature=temperature, median=True)
-        L = compute_softmax_kernel(feats=feats_B, temperature=temperature, median=True)
 
-        sim_kl = rw_similarity(K, L, unbiased)
-        sim_kk = rw_similarity(K, K, unbiased)
-        sim_ll = rw_similarity(L, L, unbiased)
+        K = compute_softmax_kernel(feats_A, temperature, range_based=range_based)
+        L = compute_softmax_kernel(feats_B, temperature, range_based=range_based)
+
+        # sim_kl = rw_similarity(K, L, unbiased)
+        # sim_kk = rw_similarity(K, K, unbiased)
+        # sim_ll = rw_similarity(L, L, unbiased)
+
+        # since K and L are markovian matrices their inner product is defines a random walk similarity
+        sim_kl = torch.sum(K * L.T)
+        sim_kk = torch.sum(K * K.T)
+        sim_ll = torch.sum(L * L.T)
                 
-        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-9).item()
+        denominator = torch.sqrt(sim_kk * sim_ll).item()
+        denominator = check_division_by_zero_warning("Softmax RWKA", denominator)
+
+        softmax_score = sim_kl.item() / denominator
+        print(f"Temperature: {temperature}, sim_kl: {sim_kl.item()}, sim_kk: {sim_kk.item()}, sim_ll: {sim_ll.item()}, softmax_score: {softmax_score}")
+        if torch.isnan(torch.tensor(softmax_score)):
+            print(f"Warning: Softmax RWKA returned NaN. sim_kl: {sim_kl.item()}, sim_kk: {sim_kk.item()}, sim_ll: {sim_ll.item()}, temperature: {temperature}")
+            return 0.0  
+        return softmax_score
     
 
     @staticmethod
@@ -220,11 +259,12 @@ class AlignmentMetrics:
         K = compute_rbf_kernel(feats_A, rbf_sigma=rbf_sigma, median=median)
         L = compute_rbf_kernel(feats_B, rbf_sigma=rbf_sigma, median=median)
 
-        sim_kl = rw_similarity(K, L, unbiased)
-        sim_kk = rw_similarity(K, K, unbiased)
-        sim_ll = rw_similarity(L, L, unbiased)
+        sim_kl = rw_similarity(K, L, unbiased, symmetric=False)
+        sim_kk = rw_similarity(K, K, unbiased, symmetric=False)
+        sim_ll = rw_similarity(L, L, unbiased, symmetric=False)
 
-        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-9).item()
+        denominator = check_division_by_zero_warning("RBF RWKA", torch.sqrt(sim_kk * sim_ll))
+        return sim_kl.item() / denominator
 
     @staticmethod
     def nn_rwka(
@@ -259,12 +299,12 @@ class AlignmentMetrics:
                                             symmetric=symmetric)
 
 
-        sim_kl = rw_similarity(K, L, unbiased)
-        sim_kk = rw_similarity(K, K, unbiased)
-        sim_ll = rw_similarity(L, L, unbiased)
-                
-        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
+        sim_kl = rw_similarity(K, L, unbiased, symmetric=False)
+        sim_kk = rw_similarity(K, K, unbiased, symmetric=False)
+        sim_ll = rw_similarity(L, L, unbiased, symmetric=False)
 
+        denominator = check_division_by_zero_warning("NN-RWKA", torch.sqrt(sim_kk * sim_ll))
+        return sim_kl.item() / denominator
 
     @staticmethod
     def unbiased_cka(*args, **kwargs):
@@ -370,11 +410,19 @@ class AlignmentMetrics:
         sim_kl = similarity(K, L, topk)
         sim_kk = similarity(K, K, topk)
         sim_ll = similarity(L, L, topk)
-                
-        return sim_kl.item() / (torch.sqrt(sim_kk * sim_ll) + 1e-6).item()
 
+        denominator = torch.sqrt(sim_kk * sim_ll).item()
 
-def rw_similarity(K, L, unbiased=False):
+        denominator = check_division_by_zero_warning("CKNNA", denominator)
+
+        return sim_kl.item() / denominator
+
+def check_division_by_zero_warning(metric_name, denominator):
+    if denominator < 1e-10:
+        print(f"Warning: {metric_name} denominator is very small ({denominator}), adding epsilon to avoid division by zero.")
+    return denominator + 1e-10
+
+def rw_similarity(K, L, unbiased=False, symmetric=True):
     """
     Computes the similarity between two kernels K and L for random-walk based methods.
     Used for random walk kernel alignment (RWKA) similarity.
@@ -389,20 +437,25 @@ def rw_similarity(K, L, unbiased=False):
     else:
         K_hat, L_hat = K, L
     
-    K_norm = normalize_random_walk_kernel(K_hat)
-    L_norm = normalize_random_walk_kernel(L_hat)
+    K_norm = normalize_random_walk_kernel(K_hat, symmetric=symmetric)
+    L_norm = normalize_random_walk_kernel(L_hat, symmetric=symmetric)
 
-    sim = torch.trace(K_norm @ L_norm)
+    # Compute the similarity as the sum of element-wise product of the normalized kernels (mathematically equivalent to trace(K_norm @ L_norm))
+    sim = torch.sum(K_norm * L_norm.T)
     
     return sim
 
-def normalize_random_walk_kernel(K):
+def normalize_random_walk_kernel(K, symmetric=True):
     """ Compute the normalized kernel for random walk based methods """
     device = K.device
     col_sum = torch.sum(K, dim=0)
     col_sum[col_sum == 0] = 1.0  # avoid division by zero
-    D_K_mhalf  = torch.diag(col_sum ** (-0.5)).to(device)
-    return D_K_mhalf @ K @ D_K_mhalf
+    if symmetric:
+        D_K_mhalf  = torch.diag(col_sum ** (-0.5)).to(device)
+        return D_K_mhalf @ K @ D_K_mhalf
+    else:
+        D_K_inv = torch.diag(1.0 / col_sum).to(device)
+        return K @ D_K_inv
 
 def hsic_unbiased(K, L):
     """
@@ -496,7 +549,48 @@ def compute_nearest_neighbors_graph(
     return knn_graph
 
 
-def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True):
+def compute_softmax_kernel(feats, temperature=0.1, range_based=False):
+    """
+        Computes the softmax kernel from features, 
+        with an option to use the median heuristic for temperature selection.
+        The kernel is in double precision to avoid underflow issues in the exponential computation, 
+        and in further processing (e.g. multiplication with another kernel).
+        Args:
+            feats: a torch tensor of shape N x D
+            temperature: a float representing the temperature for the softmax kernel
+            range_based: if True, use the range-based heuristic to set the temperature based on pairwise distances
+        Returns:
+            K: a torch tensor of shape N x N representing the softmax kernel matrix
+    """
+    # COMPUTES SOFTMAX KERNEL with higher precision to avoid numerical issues
+    # Convert to float64 for stable computation
+    feats_hp = feats.double()
+
+    K = torch.mm(feats_hp, feats_hp.T)
+
+    if range_based:
+        range = K.max() - K.min()
+        temperature_K = range * temperature
+    else:
+        # use median heuristic for temperature but first shift inner products to be positive to 
+        # avoid negative temperatures, this is possible since softmax is shift invariant
+        median = K.median() - K.min()
+        temperature_K = median * temperature
+    
+    def stable_softmax(x, dim=-1):
+        # Subtract the maximum value for numerical stability
+        z = x - torch.max(x, dim=dim, keepdim=True)[0]
+        exp_z = torch.exp(z)
+        return exp_z / torch.sum(exp_z, dim=dim, keepdim=True)
+
+    # Compute softmax kernel in float64 precision to avoid underflow issues in multiplication
+    # K = stable_softmax(K / temperature_K, dim=1)
+    K = torch.softmax(K / temperature_K, dim=1)
+
+    return K
+
+
+def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True, quantile=None):
     """
         Computes the rbf kernel from features, 
         with an option to use the median heuristic for bandwidth selection.
@@ -506,6 +600,7 @@ def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True):
             feats: a torch tensor of shape N x D
             rbf_sigma: a float representing the bandwidth scaling factor for the RBF kernel
             median: if True, use the median heuristic to set the bandwidth based on pairwise distances
+            quantile: if not None, use the quantile heuristic to set the bandwidth based on pairwise distances
         Returns:
             K: a torch tensor of shape N x N representing the RBF kernel matrix
     """
@@ -515,7 +610,10 @@ def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True):
 
     K = torch.cdist(feats_hp, feats_hp)
 
-    if median:
+    if quantile is not None:
+        tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
+        rbf_sigma_K = torch.quantile(K[tril_indices[0], tril_indices[1]], q=float(quantile)).item()
+    elif median:
         # use median heuristic for bandwidth using lower triangular part (excluding diagonal)
         tril_indices = torch.tril_indices(K.shape[0], K.shape[1], offset=-1)
         rbf_sigma_K = torch.median(K[tril_indices[0], tril_indices[1]]).item() * rbf_sigma
@@ -524,35 +622,6 @@ def compute_rbf_kernel(feats, rbf_sigma=1.0, median=True):
     
     # Compute RBF kernel in float64 precision to avoid underflow issues in multiplication
     K = torch.exp(- K ** 2 / (2 * rbf_sigma_K ** 2))
-
-    return K
-
-
-def compute_softmax_kernel(feats, temperature=0.1, median=True):
-    """
-    Computes the softmax kernel from features.
-    Args:
-        feats: a torch tensor of shape N x D
-        temperature: a float representing the temperature for the softmax
-        median: if True, use the median heuristic to set the temperature based on pairwise correlations
-    Returns:
-        K: a torch tensor of shape N x N representing the softmax kernel matrix
-    """
-    # Convert to float64 for stable computation
-    feats_hp = feats.double()
-
-    # Compute cosine similarities
-    corr = feats_hp @ feats_hp.T
-
-    if median:
-        # use median heuristic for temperature using lower triangular part (excluding diagonal)
-        tril_indices = torch.tril_indices(corr.shape[0], corr.shape[1], offset=-1)
-        temperature = torch.median(corr[tril_indices[0], tril_indices[1].abs()]).item() * temperature
-    else:
-        temperature = temperature
-
-    # Compute softmax kernel in float64 precision to avoid underflow issues in multiplication
-    K = torch.softmax(corr / temperature, dim=1)
 
     return K
 
