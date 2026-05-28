@@ -144,8 +144,11 @@ if __name__ == "__main__":
             else:
                 param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).round().long().tolist()
         elif param_name == 'temperature':
-            # For temperature, use linear steps
-            param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
+            # For rbf_sigma, use geometric steps
+            if args.logscale:
+                param_vec = torch.from_numpy(np.geomspace(param_min, param_max, num=args.sweep_len)).tolist()
+            else:
+                param_vec = torch.linspace(param_min, param_max, steps=args.sweep_len).tolist()
         elif param_name == 'rbf_sigma':
             # For rbf_sigma, use geometric steps
             if args.logscale:
