@@ -63,7 +63,7 @@ class AlignmentMetrics:
         return torch.from_numpy(np.asarray(feats))
 
     @staticmethod
-    def measure(metric, *args, **kwargs):
+    def measure(metric, feats_A, feats_B, *args, **kwargs):
         """ metric is a string for the function """
 
         if metric not in AlignmentMetrics.SUPPORTED_METRICS:
@@ -75,29 +75,29 @@ class AlignmentMetrics:
         # Map cka_rbf to cka with rbf kernel
         if metric == "cka_rbf":
             kwargs['kernel_metric'] = 'rbf'
-            return AlignmentMetrics.cka(*args, **kwargs)
+            return AlignmentMetrics.cka(feats_A, feats_B, *args, **kwargs)
         elif metric == "cka_rbf_quantile":
             kwargs['kernel_metric'] = 'rbf'
             return AlignmentMetrics.cka(feats_A, feats_B, *args, **kwargs)
         elif metric == "nn_rwka":
             kwargs['use_distance'] = True
             kwargs['symmetric'] = True
-            return AlignmentMetrics.nn_rwka(*args, **kwargs)
+            return AlignmentMetrics.nn_rwka(feats_A, feats_B, *args, **kwargs)
         elif metric == "ip_nn_rwka":
             kwargs['use_distance'] = False
             kwargs['symmetric'] = True
-            return AlignmentMetrics.nn_rwka(*args, **kwargs)
+            return AlignmentMetrics.nn_rwka(feats_A, feats_B, *args, **kwargs)
         elif metric == "asym_nn_rwka":
             kwargs['use_distance'] = True
             kwargs['symmetric'] = False
-            return AlignmentMetrics.nn_rwka(*args, **kwargs)
+            return AlignmentMetrics.nn_rwka(feats_A, feats_B, *args, **kwargs)
         elif metric == "rbf_rwka_quantile":
             return AlignmentMetrics.rbf_rwka(feats_A, feats_B, *args, **kwargs)
         elif metric == "mutual_knn_dist":
             kwargs['use_distance'] = True
             return AlignmentMetrics.mutual_knn(feats_A, feats_B, *args, **kwargs)
         
-        return getattr(AlignmentMetrics, metric)(*args, **kwargs)
+        return getattr(AlignmentMetrics, metric)(feats_A, feats_B, *args, **kwargs)
 
 
     @staticmethod

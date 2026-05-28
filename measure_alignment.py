@@ -74,7 +74,7 @@ def compute_score(x_feats, y_feats, metric="mutual_knn", normalize=True, layer_m
                 x_aligned = x
                 y_aligned = y
 
-            score = metrics.AlignmentMetrics.measure(metric, x_aligned, y_aligned, **kwargs)
+            score = metrics.AlignmentMetrics.measure(metric, feats_A=x_aligned, feats_B=y_aligned, **kwargs)
 
             if score > best_alignment_score:
                 best_alignment_score = score
