@@ -7,3 +7,4 @@ results/
 **__pycache__/**
 *.pyc*
 post_processing/figures/
+AGENTS.md

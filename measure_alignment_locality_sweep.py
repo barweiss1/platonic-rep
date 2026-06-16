@@ -12,7 +12,7 @@ from tasks import get_models
 import utils
 from pprint import pprint
 
-from measure_alignment import prepare_features, compute_score
+from measure_alignment import prepare_features, compute_layer_scores
 
 
 
@@ -27,7 +27,9 @@ def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, preci
         precise: if true use exact quantiling. (helpful to set to false if running on cpu)
             this is more of a feature to speed up matmul if using float32 
             used in measure_alignment.py
-        layer_mode: 'max' to find max alignment across all layers, 'final' to use only final layer
+        layer_mode: 'max' to find max alignment independently at each parameter,
+            'final' to use only final layer, or 'max_auc' to use the layer pair
+            with maximal average alignment across the sweep
     Returns:
         alignment_scores: a numpy array of shape len(x_feat_paths) x len(y_feat_paths) x len(param_vec)
         alignment_indices: a numpy array of shape len(x_feat_paths) x len(y_feat_paths) x len(param_vec) x 2
@@ -48,43 +50,61 @@ def compute_alignment_sweep(x_feat_paths, y_feat_paths, metric, param_vec, preci
     sweep_config = metrics.AlignmentMetrics.SWEEP_PARAMS[metric]
     param_name = sweep_config['param']
     
-    # sweep over parameter values and compute alignment for each between all models 
-    for param_idx, param_value in enumerate(param_vec):
-        for i, x_fp in enumerate(x_feat_paths):
-            raw_x = torch.load(x_fp, map_location="cuda:0")["feats"]
-            if isinstance(raw_x, torch.Tensor):
-                x_feats = prepare_features(raw_x.float(), exact=precise)
+    for i, x_fp in enumerate(x_feat_paths):
+        raw_x = torch.load(x_fp, map_location="cuda:0")["feats"]
+        if isinstance(raw_x, torch.Tensor):
+            x_feats = prepare_features(raw_x.float(), exact=precise)
+        else:
+            x_feats = [prepare_features(layer.float(), exact=precise) for layer in raw_x]
+
+        for j, y_fp in enumerate(y_feat_paths):
+            if symmetric_metric and i > j:
+                pbar.update(len(param_vec))
+                continue
+
+            raw_y = torch.load(y_fp, map_location="cuda:0")["feats"]
+            if isinstance(raw_y, torch.Tensor):
+                y_feats = prepare_features(raw_y.float(), exact=precise)
             else:
-                x_feats = [prepare_features(layer.float(), exact=precise) for layer in raw_x]
-                
-            for j, y_fp in enumerate(y_feat_paths):
-                if symmetric_metric:
-                    if i > j:
-                        pbar.update(1)
-                        continue           
+                y_feats = [prepare_features(layer.float(), exact=precise) for layer in raw_y]
 
-                raw_y = torch.load(y_fp, map_location="cuda:0")["feats"]
-                if isinstance(raw_y, torch.Tensor):
-                    y_feats = prepare_features(raw_y.float(), exact=precise)
-                else:
-                    y_feats = [prepare_features(layer.float(), exact=precise) for layer in raw_y]
-                
-                # Build kwargs with the appropriate parameter
+            layer_param_scores = None
+            for param_idx, param_value in enumerate(param_vec):
                 kwargs = {param_name: param_value} if param_name else {}
-                kwargs['layer_mode'] = layer_mode
-                best_score, best_indices = compute_score(y_feats, x_feats, metric=metric, **kwargs)
-                
-                alignment_scores[i, j, param_idx] = best_score
-                alignment_indices[i, j, param_idx] = best_indices
-                
-                if symmetric_metric:
-                    alignment_scores[j, i, param_idx] = best_score
-                    alignment_indices[j, i, param_idx] = (best_indices[1], best_indices[0])
-
+                layer_scores = compute_layer_scores(y_feats, x_feats, metric=metric, **kwargs)
+                if layer_param_scores is None:
+                    layer_param_scores = np.zeros((*layer_scores.shape, len(param_vec)))
+                layer_param_scores[:, :, param_idx] = layer_scores
                 pbar.update(1)
 
-                del y_feats
-                torch.cuda.empty_cache()
+            if layer_mode == 'max':
+                for param_idx in range(len(param_vec)):
+                    best_indices = np.unravel_index(
+                        np.argmax(layer_param_scores[:, :, param_idx]),
+                        layer_param_scores[:, :, param_idx].shape,
+                    )
+                    alignment_scores[i, j, param_idx] = layer_param_scores[
+                        best_indices[0], best_indices[1], param_idx
+                    ]
+                    alignment_indices[i, j, param_idx] = best_indices
+            elif layer_mode == 'final':
+                best_indices = (layer_param_scores.shape[0] - 1, layer_param_scores.shape[1] - 1)
+                alignment_scores[i, j, :] = layer_param_scores[best_indices[0], best_indices[1], :]
+                alignment_indices[i, j, :, :] = best_indices
+            elif layer_mode == 'max_auc':
+                auc_by_layer = layer_param_scores.mean(axis=2)
+                best_indices = np.unravel_index(np.argmax(auc_by_layer), auc_by_layer.shape)
+                alignment_scores[i, j, :] = layer_param_scores[best_indices[0], best_indices[1], :]
+                alignment_indices[i, j, :, :] = best_indices
+            else:
+                raise ValueError(f"Invalid layer_mode: {layer_mode}. Must be 'max', 'final', or 'max_auc'")
+
+            if symmetric_metric:
+                alignment_scores[j, i, :] = alignment_scores[i, j, :]
+                alignment_indices[j, i, :, :] = alignment_indices[i, j, :, ::-1]
+
+            del y_feats
+            torch.cuda.empty_cache()
 
     return alignment_scores, alignment_indices
 
@@ -110,8 +130,8 @@ if __name__ == "__main__":
     parser.add_argument("--metric",         type=str, default="mutual_knn", 
                         choices=metrics.AlignmentMetrics.SUPPORTED_METRICS)
     parser.add_argument("--sweep_len",      type=int, default=10, help="Number of steps in parameter sweep")
-    parser.add_argument("--layer_mode",     type=str, default="max", choices=["max", "final"], 
-                        help="'max' finds best alignment across all layers, 'final' uses only final layer")
+    parser.add_argument("--layer_mode",     type=str, default="max", choices=["max", "final", "max_auc"], 
+                        help="'max' finds best alignment at each parameter, 'final' uses final layers, 'max_auc' uses the layer pair with best average alignment across the sweep")
     parser.add_argument("--run_name",      type=str, default="test", help="Subdirectory name for this run's results")
 
     parser.add_argument("--logscale",   action="store_true", help="Whether to use logscale for parameter sweep (e.g., for temperature or rbf_sigma)")

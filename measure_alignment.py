@@ -31,6 +31,44 @@ def prepare_features(feats, q=0.95, exact=False):
         raise ValueError(f"Unsupported input type for prepare_features: {type(feats)}")
 
 
+def _as_layer_list(feats):
+    if isinstance(feats, torch.Tensor):
+        return [feats[:, i, :] for i in range(feats.shape[1])]
+    if isinstance(feats, list):
+        return feats
+    raise ValueError(f"Unsupported input type for layer scoring: {type(feats)}")
+
+
+def compute_layer_scores(x_feats, y_feats, metric="mutual_knn", normalize=True, **kwargs):
+    """
+    Compute alignment scores for every layer pair.
+    Args:
+        x_feats: a torch tensor of shape N x L x D or a list of N x D tensors
+        y_feats: a torch tensor of shape N x L x D or a list of N x D tensors
+    Returns:
+        layer_scores: a numpy array of shape n_x_layers x n_y_layers
+    """
+    x_feats = _as_layer_list(x_feats)
+    y_feats = _as_layer_list(y_feats)
+
+    layer_scores = np.zeros((len(x_feats), len(y_feats)))
+
+    for i, x in enumerate(x_feats):
+        for j, y in enumerate(y_feats):
+            if normalize:
+                x_aligned = F.normalize(x, p=2, dim=-1)
+                y_aligned = F.normalize(y, p=2, dim=-1)
+            else:
+                x_aligned = x
+                y_aligned = y
+
+            layer_scores[i, j] = metrics.AlignmentMetrics.measure(
+                metric, feats_A=x_aligned, feats_B=y_aligned, **kwargs
+            )
+
+    return layer_scores
+
+
 def compute_score(x_feats, y_feats, metric="mutual_knn", normalize=True, layer_mode='max', **kwargs):
     """
     Uses different layer combinations of x_feats and y_feats to find the best alignment
@@ -42,43 +80,24 @@ def compute_score(x_feats, y_feats, metric="mutual_knn", normalize=True, layer_m
         best_alignment_score: the best alignment score
         best_alignment: the indices of the best alignment
     """
-    if isinstance(x_feats, torch.Tensor):
-        x_feats = [x_feats[:, i, :] for i in range(x_feats.shape[1])]
+    x_feats = _as_layer_list(x_feats)
+    y_feats = _as_layer_list(y_feats)
 
-    if isinstance(y_feats, torch.Tensor):
-        y_feats = [y_feats[:, j, :] for j in range(y_feats.shape[1])]
-
-    best_alignment_indices = None
-    best_alignment_score = float('-inf')  # Changed from 0 to -inf to handle negative scores
-
-    # Determine which layers to compare based on layer_mode
     if layer_mode == 'final':
-        # Only compare final layers
-        x_indices = [len(x_feats) - 1]
-        y_indices = [len(y_feats) - 1]
+        best_alignment_indices = (len(x_feats) - 1, len(y_feats) - 1)
+        layer_scores = compute_layer_scores(
+            [x_feats[-1]], [y_feats[-1]], metric=metric, normalize=normalize, **kwargs
+        )
+        best_alignment_score = layer_scores[0, 0]
     elif layer_mode == 'max':
-        # Compare all layer combinations
-        x_indices = range(len(x_feats))
-        y_indices = range(len(y_feats))
+        layer_scores = compute_layer_scores(
+            x_feats, y_feats, metric=metric, normalize=normalize, **kwargs
+        )
+        best_alignment_indices = np.unravel_index(np.argmax(layer_scores), layer_scores.shape)
+        best_alignment_score = layer_scores[best_alignment_indices]
     else:
         raise ValueError(f"Invalid layer_mode: {layer_mode}. Must be 'final' or 'max'")
 
-    for i in x_indices:
-        x = x_feats[i]
-        for j in y_indices:
-            y = y_feats[j]
-            if normalize:
-                x_aligned = F.normalize(x, p=2, dim=-1)
-                y_aligned = F.normalize(y, p=2, dim=-1)
-            else:
-                x_aligned = x
-                y_aligned = y
-
-            score = metrics.AlignmentMetrics.measure(metric, feats_A=x_aligned, feats_B=y_aligned, **kwargs)
-
-            if score > best_alignment_score:
-                best_alignment_score = score
-                best_alignment_indices = (i, j)
     return best_alignment_score, best_alignment_indices
 
     
