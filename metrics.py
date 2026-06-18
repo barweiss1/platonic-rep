@@ -48,8 +48,8 @@ class AlignmentMetrics:
         "nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "ip_nn_rwka": {"param": "topk", "min": 3, "max": 500},
         "asym_nn_rwka": {"param": "topk", "min": 3, "max": 500},
-        "softmax_rwka": {"param": "temperature", "min": 1e-5, "max": 10.0},
-        "softmax_cka": {"param": "temperature", "min": 1e-5, "max": 10.0},        
+        "softmax_rwka": {"param": "temperature", "min": 1e-3, "max": 10.0},
+        "softmax_cka": {"param": "temperature", "min": 1e-3, "max": 10.0},        
         "cka": {"param": None, "min": None, "max": None},  # No sweep
         "unbiased_cka": {"param": None, "min": None, "max": None},  # No sweep
         "svcca": {"param": None, "min": None, "max": None},  # No sweep
@@ -190,14 +190,14 @@ class AlignmentMetrics:
     @staticmethod
     def softmax_rwka(feats_A, feats_B, temperature, unbiased=False, range_based=False):
         """
-        Computes the softmax-based CKA between features.
+        Computes the softmax-based RWKA between features.
         The inner products are converted to similarity matrices using softmax with a temperature parameter.
         Args:
             feats_A: A torch tensor of shape N x feat_dim
             feats_B: A torch tensor of shape N x feat_dim
             temperature: A float representing the temperature for softmax
         Returns:
-            A float representing the softmax-based CKA similarity
+            A float representing the softmax-based RWKA similarity
         """
 
         K = compute_softmax_kernel(feats_A, temperature, range_based=range_based)
@@ -216,7 +216,7 @@ class AlignmentMetrics:
         denominator = check_division_by_zero_warning("Softmax RWKA", denominator)
 
         softmax_score = sim_kl.item() / denominator
-        print(f"Temperature: {temperature}, sim_kl: {sim_kl.item()}, sim_kk: {sim_kk.item()}, sim_ll: {sim_ll.item()}, softmax_score: {softmax_score}")
+        # print(f"Temperature: {temperature}, sim_kl: {sim_kl.item()}, sim_kk: {sim_kk.item()}, sim_ll: {sim_ll.item()}, softmax_score: {softmax_score}")
         if torch.isnan(torch.tensor(softmax_score)):
             print(f"Warning: Softmax RWKA returned NaN. sim_kl: {sim_kl.item()}, sim_kk: {sim_kk.item()}, sim_ll: {sim_ll.item()}, temperature: {temperature}")
             return 0.0  
@@ -250,7 +250,7 @@ class AlignmentMetrics:
     @staticmethod
     def rbf_rwka(feats_A, feats_B, rbf_sigma, unbiased=False, median=True):
         """
-        Computes the diffusion-based CKA between features.
+        Computes the diffusion-based RWKA between features.
         Args:
             feats_A: A torch tensor of shape N x feat_dim
             feats_B: A torch tensor of shape N x feat_dim
